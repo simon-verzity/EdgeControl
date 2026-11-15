@@ -76,10 +76,11 @@ final class EdgeHUD {
         }
     }
 
-    func showLockCountdown(seconds: Int, id: UUID) {
+    func showLockCountdown(tenths: Int, id: UUID) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            let title = "Locking in \(max(0, seconds))s"
+            let value = max(0, tenths)
+            let title = "Locking in \(value / 10).\(value % 10)s"
             guard self.lockCountdownID != id || self.model.statusTitle != title else { return }
             self.lockCountdownID = id
             self.model.isCompactStatus = true
@@ -154,6 +155,7 @@ private struct EdgeHUDView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(model.statusTitle)
                             .font(.system(size: 22, weight: .semibold))
+                            .monospacedDigit()
                         if !model.statusSubtitle.isEmpty {
                             Text(model.statusSubtitle)
                                 .font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)

@@ -275,9 +275,11 @@ struct CornerHoldGesture {
         return didFire || now - beganAt >= 0.25
     }
 
-    func countdownSeconds(now: TimeInterval) -> Int? {
+    func countdownTenths(now: TimeInterval) -> Int? {
         guard let beganAt, !cancelled, now >= beganAt + Self.countdownDelay else { return nil }
-        return Int(ceil(max(0, duration - max(0, now - beganAt))))
+        let remaining = max(0, duration - max(0, now - beganAt))
+        // Avoid rounding an exact tenth up due to floating-point noise.
+        return max(0, Int(ceil(remaining * 10 - 0.000001)))
     }
 }
 
@@ -589,7 +591,7 @@ final class EdgeGestureController {
             cancelQuickMuteTap()
             unfreezeCursor()
             performHaptic()
-            EdgeHUD.shared.showLockCountdown(seconds: 0, id: lockHoldID)
+            EdgeHUD.shared.showLockCountdown(tenths: 0, id: lockHoldID)
             // Allow the final 0 to render before macOS covers the screen.
             // Lift, cancellation, or stop invalidates this pending request.
             let id = lockHoldID
@@ -607,8 +609,8 @@ final class EdgeGestureController {
                 lockCommitWorkItem?.cancel()
                 EdgeHUD.shared.hideLockCountdown(id: lockHoldID)
             }
-        } else if let seconds = lockHold.countdownSeconds(now: ProcessInfo.processInfo.systemUptime) {
-            EdgeHUD.shared.showLockCountdown(seconds: seconds, id: lockHoldID)
+        } else if let tenths = lockHold.countdownTenths(now: ProcessInfo.processInfo.systemUptime) {
+            EdgeHUD.shared.showLockCountdown(tenths: tenths, id: lockHoldID)
         }
     }
 
