@@ -1,0 +1,35 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+		A10000000000000000000001 /* EdgeControl.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EdgeControl.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000002 /* EdgeControlApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeControlApp.swift; sourceTree = "<group>"; };
+		A10000000000000000000014 /* TrackpadMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackpadMonitor.swift; sourceTree = "<group>"; };
+		A10000000000000000000015 /* BrightnessController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrightnessController.swift; sourceTree = "<group>"; };
+		A10000000000000000000018 /* BrightnessHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrightnessHUD.swift; sourceTree = "<group>"; };
+		A10000000000000000000020 /* AudioVolumeController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioVolumeController.swift; sourceTree = "<group>"; };
+		A10000000000000000000003 /* Sources */ = {isa = PBXGroup; children = (A10000000000000000000004 /* EdgeControl */,); path = Sources; sourceTree = "<group>"; };
+		A10000000000000000000004 /* EdgeControl */ = {isa = PBXGroup; children = (A10000000000000000000002 /* EdgeControlApp.swift */, A10000000000000000000014 /* TrackpadMonitor.swift */, A10000000000000000000015 /* BrightnessController.swift */, A10000000000000000000018 /* BrightnessHUD.swift */, A10000000000000000000020 /* AudioVolumeController.swift */,); path = EdgeControl; sourceTree = "<group>"; };
+		A10000000000000000000005 = {isa = PBXGroup; children = (A10000000000000000000003 /* Sources */, A10000000000000000000006 /* Products */,); sourceTree = "<group>"; };
+		A10000000000000000000006 /* Products */ = {isa = PBXGroup; children = (A10000000000000000000001 /* EdgeControl.app */,); name = Products; sourceTree = "<group>"; };
+		A10000000000000000000007 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000008 /* EdgeControlApp.swift in Sources */, A10000000000000000000013 /* TrackpadMonitor.swift in Sources */, A10000000000000000000017 /* BrightnessController.swift in Sources */, A10000000000000000000019 /* BrightnessHUD.swift in Sources */, A10000000000000000000021 /* AudioVolumeController.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0; };
+		A10000000000000000000008 /* EdgeControlApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* EdgeControlApp.swift */; };
+		A10000000000000000000013 /* TrackpadMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000014 /* TrackpadMonitor.swift */; };
+		A10000000000000000000017 /* BrightnessController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* BrightnessController.swift */; };
+		A10000000000000000000019 /* BrightnessHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* BrightnessHUD.swift */; };
+		A10000000000000000000021 /* AudioVolumeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000020 /* AudioVolumeController.swift */; };
+		A10000000000000000000009 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A1000000000000000000000A /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A1000000000000000000000B /* EdgeControl */ = {isa = PBXNativeTarget; buildConfigurationList = A10000000000000000000010; buildPhases = (A10000000000000000000007 /* Sources */, A10000000000000000000009 /* Frameworks */, A1000000000000000000000A /* Resources */,); buildRules = (); dependencies = (); name = EdgeControl; productName = EdgeControl; productReference = A10000000000000000000001 /* EdgeControl.app */; productType = "com.apple.product-type.application"; };
+		A1000000000000000000000C /* Project */ = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = 1; LastUpgradeCheck = 2720; } ; buildConfigurationList = A1000000000000000000000D; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base,); mainGroup = A10000000000000000000005; productRefGroup = A10000000000000000000006 /* Products */; projectDirPath = ""; projectRoot = ""; targets = (A1000000000000000000000B /* EdgeControl */,); };
+		A1000000000000000000000E /* Project Debug */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; USE_HEADERMAP = YES; MACOSX_DEPLOYMENT_TARGET = 13.0; SDKROOT = macosx; SWIFT_VERSION = 5.0; }; name = Debug; };
+		A1000000000000000000000F /* Project Release */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; USE_HEADERMAP = YES; MACOSX_DEPLOYMENT_TARGET = 13.0; SDKROOT = macosx; SWIFT_VERSION = 5.0; }; name = Release; };
+		A10000000000000000000011 /* Target Debug */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; USE_HEADERMAP = YES; CODE_SIGNING_ALLOWED = NO; CURRENT_PROJECT_VERSION = 1.13; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = EdgeControl; INFOPLIST_KEY_LSUIElement = YES; MACOSX_DEPLOYMENT_TARGET = 13.0; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.edgecontrol.menubar; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = macosx; SWIFT_VERSION = 5.0; }; name = Debug; };
+		A10000000000000000000012 /* Target Release */ = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; USE_HEADERMAP = YES; CODE_SIGNING_ALLOWED = NO; CURRENT_PROJECT_VERSION = 1.13; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = EdgeControl; INFOPLIST_KEY_LSUIElement = YES; MACOSX_DEPLOYMENT_TARGET = 13.0; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.edgecontrol.menubar; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = macosx; SWIFT_VERSION = 5.0; }; name = Release; };
+		A10000000000000000000010 /* Target Configurations */ = {isa = XCConfigurationList; buildConfigurations = (A10000000000000000000011 /* Target Debug */, A10000000000000000000012 /* Target Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A1000000000000000000000D /* Project Configurations */ = {isa = XCConfigurationList; buildConfigurations = (A1000000000000000000000E /* Project Debug */, A1000000000000000000000F /* Project Release */,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+	};
+	rootObject = A1000000000000000000000C /* Project */;
+}
