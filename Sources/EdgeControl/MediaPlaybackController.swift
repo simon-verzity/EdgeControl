@@ -81,4 +81,58 @@ enum MediaPlaybackController {
             finish(.failed)
         }
     }
+
+    /// Determines the desired state first, then retries only an explicit
+    /// play/pause command after a failed confirmation. A second toggle would
+    /// be unsafe because the first command may already have reached the player.
+    static func toggle(completion: @escaping (MediaPlaybackResult) -> Void) {
+        func issue(target: Bool, canRetry: Bool) {
+            perform(target ? .play : .pause) { result in
+                switch result {
+                case .confirmed:
+                    completion(result)
+                case .noPlayer where canRetry:
+                    query(retry: false)
+                case .failed where canRetry:
+                    verify(target: target)
+                default:
+                    completion(result)
+                }
+            }
+        }
+
+        func verify(target: Bool) {
+            perform(.query) { result in
+                switch result {
+                case .confirmed(let playing) where playing == target:
+                    completion(.confirmed(playing: playing))
+                case .confirmed:
+                    issue(target: target, canRetry: false)
+                default:
+                    completion(result)
+                }
+            }
+        }
+
+        func query(retry: Bool) {
+            perform(.query) { result in
+                switch result {
+                case .confirmed(let playing):
+                    issue(target: !playing, canRetry: true)
+                case .failed where retry:
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        query(retry: false)
+                    }
+                case .noPlayer where retry:
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        query(retry: false)
+                    }
+                default:
+                    completion(result)
+                }
+            }
+        }
+
+        query(retry: true)
+    }
 }

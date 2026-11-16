@@ -22,11 +22,20 @@ struct MediaPlaybackChecks {
             }
             return result ?? .failed
         }
+        func toggle() -> MediaPlaybackResult {
+            var result: MediaPlaybackResult?
+            MediaPlaybackController.toggle { result = $0 }
+            let deadline = Date().addingTimeInterval(8)
+            while result == nil && Date() < deadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            }
+            return result ?? .failed
+        }
         guard case .confirmed(let original) = perform(.query) else {
             print("No active player; live check skipped")
             exit(1)
         }
-        let changed = perform(.toggle)
+        let changed = toggle()
         // Always use an explicit command to restore the original state, even
         // if the toggle was applied but its confirmation failed.
         let restored = perform(original ? .play : .pause)

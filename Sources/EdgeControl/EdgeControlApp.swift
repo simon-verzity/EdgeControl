@@ -774,7 +774,7 @@ final class EdgeGestureController {
         }
         guard !playbackQueryPending else { return }
         playbackQueryPending = true
-        MediaPlaybackController.perform { [weak self] result in
+        MediaPlaybackController.toggle { [weak self] result in
             guard let self else { return }
             self.playbackQueryPending = false
             switch result {
