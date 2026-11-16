@@ -41,7 +41,7 @@ enum AudioVolumeController {
             runScript("set volume with output muted \(target ? "true" : "false")")
         }
         let actual = readMute() ?? scriptMuted() ?? target
-        EdgeHUD.shared.showMuteStatus(muted: actual)
+        EdgeHUD.shared.showMuteStatus(muted: actual, volumePercent: readPercent())
         return actual
     }
 

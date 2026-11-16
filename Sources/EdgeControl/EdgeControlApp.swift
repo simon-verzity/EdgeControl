@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 import CoreGraphics
 import ServiceManagement
-import ApplicationServices
 import Darwin
 
 @main
@@ -78,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installSettingsDismissal()
         gestures = EdgeGestureController()
         gestures.start()
+        TrackpadDebugOverlay.shared.setEnabled(Pref.bool("debugTrackpadFrames"))
     }
 
     func showSettings() {
@@ -232,6 +232,7 @@ enum CornerTapZone {
 // without invoking the system lock screen.
 struct CornerHoldGesture {
     static let countdownDelay: TimeInterval = 0.3
+    static let durationRange: ClosedRange<TimeInterval> = 0.5...10
     private(set) var beganAt: TimeInterval?
     private(set) var didFire = false
     private(set) var duration: TimeInterval = 1
@@ -249,7 +250,8 @@ struct CornerHoldGesture {
         origin = point
         self.corner = corner
         self.fraction = fraction
-        self.duration = duration.isFinite ? min(3, max(0.5, duration)) : 1
+        self.duration = duration.isFinite
+            ? min(Self.durationRange.upperBound, max(Self.durationRange.lowerBound, duration)) : 2
         beganAt = now
     }
 
@@ -306,7 +308,8 @@ enum Pref {
             "longPressLock": false, "lockCorner": "topLeft", "lockHoldDuration": 2.0,
             "tapPause": false, "sensitivity": 1.5, "edgeFraction": 0.05,
             "requireModifier": false, "fineControl": true, "edrBrightnessEnabled": false,
-            "volumeEdge": "left", "brightnessEdge": "right"
+            "volumeEdge": "left", "brightnessEdge": "right",
+            "debugTrackpadFrames": false
         ])
         if needsVolumeEdgeMigration {
             defaults.set(defaults.bool(forKey: "swapSides") ? "right" : "left", forKey: "volumeEdge")
@@ -331,12 +334,14 @@ final class EdgeGestureController {
     private var pendingMotion = 0.0
     private var lastTrackpadPoint: CGPoint?
     private var gestureStart: CGPoint?
+    private var gestureDebugID = UUID()
     private var gestureSlid = false
     private var activeEdgeMode: String?
     private var activeEdgeName: String?
     private var edgeStart: CGPoint?
     private var edgeArmed = false
-    private var slideRejectedUntilLift = false
+    private var swipeIntent = EdgeSwipeIntentGuard()
+    private var sideVolumeStartup = SideVolumeStartupGuard()
     private var contactBeganAt: Date?
     private var cursorFrozen = false
     private var cursorHidden = false
@@ -354,8 +359,13 @@ final class EdgeGestureController {
     private var lockCommitWorkItem: DispatchWorkItem?
 
     func start() {
+        trackpad.onDebugFrame = { TrackpadDebugOverlay.shared.record($0) }
         trackpad.onFrame = { [weak self] in self?.handleTrackpad($0) }
-        if trackpad.start() { return }
+        if trackpad.start() {
+            TrackpadDebugOverlay.shared.setBackend("Raw trackpad")
+            return
+        }
+        TrackpadDebugOverlay.shared.setBackend("Mouse fallback (no raw frames)")
         monitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] event in
             guard let self, let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) else { return }
             self.handle(NSEvent.mouseLocation, in: screen.frame)
@@ -370,7 +380,9 @@ final class EdgeGestureController {
     }
 
     private func handleTrackpad(_ contacts: [CGPoint]) {
+        TrackpadDebugOverlay.shared.setGestureStatus(edgeArmed ? "Active \(activeEdgeMode ?? "") / \(activeEdgeName ?? "")" : "Qualifying touch")
         guard contacts.count == 1, let point = contacts.first else {
+            TrackpadDebugOverlay.shared.setGestureStatus(contacts.isEmpty ? "Idle" : "Contact filtered")
             DisplayBrightness.endGesture()
             let heldForLock = lockHold.suppressesTap(now: ProcessInfo.processInfo.systemUptime)
             resetLockHold()
@@ -391,7 +403,8 @@ final class EdgeGestureController {
             edgeStart = nil
             edgeArmed = false
             activeEdgeName = nil
-            slideRejectedUntilLift = false
+            swipeIntent = EdgeSwipeIntentGuard()
+            sideVolumeStartup = SideVolumeStartupGuard()
             contactBeganAt = nil
             previous = nil
             pendingMotion = 0
@@ -400,15 +413,23 @@ final class EdgeGestureController {
         }
         if gestureStart == nil {
             gestureStart = point
+            gestureDebugID = UUID()
             contactBeganAt = Date()
+            let initialControl = assignedControl(at: point, edgeWidth: Pref.number("edgeFraction", 0.05))
+            let sideVolume = initialControl?.mode == "volume" &&
+                (initialControl?.edge == "left" || initialControl?.edge == "right")
+            sideVolumeStartup.begin(now: ProcessInfo.processInfo.systemUptime, enabled: sideVolume)
             DisplayBrightness.beginGesture()
             beginLockHold(at: point)
         }
         if let gestureStart, hypot(point.x - gestureStart.x, point.y - gestureStart.y) > 0.012 { gestureSlid = true }
         lastTrackpadPoint = point
-        updateQuickMuteTap(at: point)
-        updateLockHold(at: point)
+        if !edgeArmed {
+            updateQuickMuteTap(at: point)
+            updateLockHold(at: point)
+        }
         if lockHold.isTracking || lockHold.didFire || muteTapCandidate || muteCornerHeld {
+            TrackpadDebugOverlay.shared.setGestureStatus("Corner tap / hold")
             // Keep a click candidate out of edge gestures so it cannot adjust
             // volume or freeze/hide the pointer while awaiting release.
             previous = point
@@ -416,33 +437,51 @@ final class EdgeGestureController {
             unfreezeCursor()
             return
         }
-        if Pref.bool("requireModifier"), !NSEvent.modifierFlags.contains(.function), !NSEvent.modifierFlags.contains(.control) { previous = nil; unfreezeCursor(); return }
+        if Pref.bool("requireModifier"), !NSEvent.modifierFlags.contains(.function), !NSEvent.modifierFlags.contains(.control) {
+            TrackpadDebugOverlay.shared.setGestureStatus("Waiting for Fn / Control")
+            previous = nil; unfreezeCursor(); return
+        }
         let edgeWidth = Pref.number("edgeFraction", 0.05)
-        let configured = assignedControl(at: point, edgeWidth: edgeWidth)
-        let horizontalEdge = point.y <= edgeWidth || point.y >= 1 - edgeWidth
+        let configured = activeControl(at: point, edgeWidth: edgeWidth)
         let edgeName = configured?.edge ?? (point.y <= edgeWidth ? "bottom" : "top")
         let mode = configured?.mode
         guard let mode else {
+            TrackpadDebugOverlay.shared.setGestureStatus("Outside assigned edge")
             previous = nil; pendingMotion = 0; activeEdgeMode = nil; activeEdgeName = nil; edgeStart = nil; edgeArmed = false
             unfreezeCursor(); return
         }
-        if mode != "media", edgeName == "left" || edgeName == "right" {
-            // Keep the original touchdown as the reference: a palm must not
-            // re-arm after drifting into another edge or changing direction.
+        if mode == "volume", !sideVolumeStartup.allows(now: ProcessInfo.processInfo.systemUptime) {
+            TrackpadDebugOverlay.shared.setGestureStatus("Volume start timed out")
+            TrackpadDebugOverlay.shared.recordRejection(reason: "Volume start timed out", source: "Gesture", touchID: gestureDebugID,
+                                                        start: gestureStart, current: point, edgeWidth: edgeWidth)
+            // Arming alone isn't a volume change. A resting touch, or one that
+            // never changed the level, stays ignored until the finger lifts.
+            previous = nil
+            pendingMotion = 0
+            unfreezeCursor()
+            return
+        }
+        if mode != "media", !edgeArmed {
+            // Qualify the initial swipe at the edge. Once armed, its original
+            // control and axis stay selected until the contact ends.
             if let start = gestureStart {
                 let horizontal = edgeName == "top" || edgeName == "bottom"
-                let along = abs(horizontal ? point.x - start.x : point.y - start.y)
-                let across = abs(horizontal ? point.y - start.y : point.x - start.x)
-                let startedOnEdge = assignedControl(at: start, edgeWidth: edgeWidth)?.edge == edgeName
-                let startedInCorner = (start.x < 0.08 || start.x > 0.92) && (start.y < 0.08 || start.y > 0.92)
-                if !startedOnEdge || startedInCorner || across > 0.012 || (across > 0.006 && across * 3 > along) {
-                    slideRejectedUntilLift = true
+                let startedOnEdge = horizontal
+                    ? HorizontalEdgeSwipePolicy.contains(start, edge: edgeName, width: edgeWidth)
+                    : assignedControl(at: start, edgeWidth: edgeWidth)?.edge == edgeName
+                if !swipeIntent.allows(start: start, current: point, horizontal: horizontal,
+                                       startedOnEdge: startedOnEdge,
+                                       elapsed: Date().timeIntervalSince(contactBeganAt ?? Date()),
+                                       armed: edgeArmed,
+                                       activationTimeout: mode == "volume" ? 1.0 : 0.6) {
+                    TrackpadDebugOverlay.shared.setGestureStatus("Rejected \(edgeName): \(swipeIntent.rejectionReason ?? "swipe start")")
+                    TrackpadDebugOverlay.shared.recordRejection(reason: "\(edgeName): \(swipeIntent.rejectionReason ?? "Swipe start rejected")",
+                                                                source: "Gesture", touchID: gestureDebugID,
+                                                                start: start, current: point, edgeWidth: edgeWidth)
+                    previous = nil; pendingMotion = 0
+                    unfreezeCursor()
+                    return
                 }
-            }
-            if slideRejectedUntilLift {
-                previous = nil; pendingMotion = 0
-                unfreezeCursor()
-                return
             }
         }
         if mode != "media", Pref.bool("freezeCursor") { freezeCursor() }
@@ -464,13 +503,13 @@ final class EdgeGestureController {
             // edge gesture. Tiny palm shifts while typing should not activate it.
             // Horizontal edges use the original responsive activation rule.
             // Only side edges need the additional palm qualification delay.
-            let minimumTravel: CGFloat = horizontalGesture ? 0.022 : 0.03
-            let directionRatio: CGFloat = horizontalGesture ? 2.0 : 3.0
+            let minimumTravel: CGFloat = horizontalGesture ? HorizontalEdgeSwipePolicy.minimumTravel : 0.03
+            let directionRatio: CGFloat = horizontalGesture ? HorizontalEdgeSwipePolicy.directionRatio : 3.0
             let settled = horizontalGesture || Date().timeIntervalSince(contactBeganAt ?? Date()) >= 0.12
             guard settled,
                   abs(primaryTravel) >= minimumTravel,
                   abs(primaryTravel) >= abs(crossTravel) * directionRatio else {
-                if horizontalGesture && abs(crossTravel) > 0.015 { self.edgeStart = point }
+                TrackpadDebugOverlay.shared.setGestureStatus(horizontalGesture ? "Waiting for horizontal motion" : "Waiting for vertical motion")
                 previous = point
                 return
             }
@@ -499,7 +538,9 @@ final class EdgeGestureController {
                 let amount = Int(abs(pendingMotion) * scale)
                 if amount > 0, Date().timeIntervalSince(lastStep) > 0.035 {
                     let direction = pendingMotion > 0 ? 1 : -1
-                    if mode == "volume" { adjustVolume(direction * amount) }
+                    if mode == "volume" {
+                        sideVolumeStartup.recordVolumeChange(adjustVolume(direction * amount))
+                    }
                     else { adjustBrightness(direction * amount) }
                     pendingMotion -= Double(direction * amount) / scale
                     lastStep = Date()
@@ -508,6 +549,7 @@ final class EdgeGestureController {
             }
         }
         if cursorFrozen, let cursorAnchor { CGWarpMouseCursorPosition(cursorAnchor) }
+        TrackpadDebugOverlay.shared.setGestureStatus("Active \(mode) / \(edgeName)")
         previous = point
     }
 
@@ -524,7 +566,6 @@ final class EdgeGestureController {
                                  y: (point.y - frame.minY) / frame.height)
         let edgeWidth = Pref.number("edgeFraction", 0.05)
         let configured = assignedControl(at: normalized, edgeWidth: edgeWidth)
-        let horizontalEdge = normalized.y <= edgeWidth || normalized.y >= 1 - edgeWidth
         let edgeName = configured?.edge ?? (normalized.y <= edgeWidth ? "bottom" : "top")
         let mode = configured?.mode
         guard let mode else { previous = nil; return }
@@ -614,6 +655,19 @@ final class EdgeGestureController {
         }
     }
 
+    private func activeControl(at point: CGPoint, edgeWidth: Double) -> (mode: String, edge: String)? {
+        if let edge = activeEdgeName, let mode = activeEdgeMode {
+            // A qualified swipe owns this touch, even in the centre or over
+            // another assigned edge. Never switch controls mid-gesture.
+            if edgeArmed { return (mode, edge) }
+            // While still qualifying, allow small drift at top/bottom edges.
+            if HorizontalEdgeSwipePolicy.contains(point, edge: edge, width: edgeWidth, allowDrift: true) {
+                return (mode, edge)
+            }
+        }
+        return assignedControl(at: point, edgeWidth: edgeWidth)
+    }
+
     private func assignedControl(at point: CGPoint, edgeWidth: Double) -> (mode: String, edge: String)? {
         let edgeName: String?
         if point.x <= edgeWidth { edgeName = "left" }
@@ -637,11 +691,13 @@ final class EdgeGestureController {
             cancelQuickMuteTap()
             return
         }
-        if muteTapCandidate, let start = muteTapStartPoint {
+        if let start = muteTapStartPoint {
             guard hypot(point.x - start.x, point.y - start.y) <= 0.012 else {
                 cancelQuickMuteTap()
                 return
             }
+        }
+        if muteTapCandidate {
             if let startTime = muteTapStartTime,
                Date().timeIntervalSince(startTime) >= 0.25 {
                 muteTapCandidate = false
@@ -683,18 +739,26 @@ final class EdgeGestureController {
         muteCornerHeld = false
     }
 
-    private func adjustVolume(_ delta: Int) {
-        _ = AudioVolumeController.change(by: delta)
+    @discardableResult
+    private func adjustVolume(_ delta: Int) -> Bool {
+        let before = AudioVolumeController.readPercent()
+        let after = AudioVolumeController.change(by: delta)
+        return before != after
     }
 
     private func adjustBrightness(_ delta: Int) {
         if let percent = DisplayBrightness.setStep(delta) {
             let maximum = DisplayBrightness.maximumPercent
-            EdgeHUD.shared.show(title: percent > 100 ? "EDR Headroom" : "Brightness",
+            let edge = activeEdgeName ?? Pref.defaults.string(forKey: "brightnessEdge") ?? "right"
+            let direction = edge == "top" || edge == "bottom" ? "right" : "up"
+            let hint = percent == 100 && maximum > 100
+                ? "Swipe \(direction) again for boost (Extended Dynamic Range (EDR) brightness)" : nil
+            EdgeHUD.shared.show(title: percent > 100 ? "Brightness Boost" : "Brightness",
                                 leftSymbol: "sun.min.fill",
                                 rightSymbol: "sun.max.fill",
                                 level: Float(percent) / Float(maximum),
-                                maximum: maximum)
+                                maximum: maximum,
+                                hint: hint)
         }
     }
 
@@ -710,11 +774,14 @@ final class EdgeGestureController {
         }
         guard !playbackQueryPending else { return }
         playbackQueryPending = true
-        querySystemPlaybackState { [weak self] isPlaying in
+        MediaPlaybackController.perform { [weak self] result in
             guard let self else { return }
             self.playbackQueryPending = false
-            self.sendMediaKey(0)
-            EdgeHUD.shared.showPlaybackStatus(willPause: isPlaying)
+            switch result {
+            case .confirmed(let playing): EdgeHUD.shared.showPlaybackStatus(willPause: !playing)
+            case .noPlayer: EdgeHUD.shared.showPlaybackFailure(title: "No media")
+            case .failed: EdgeHUD.shared.showPlaybackFailure(title: "No response")
+            }
         }
     }
 
@@ -724,49 +791,6 @@ final class EdgeGestureController {
         for state in [0xA, 0xB] {
             let data = (keyCode << 16) | (state << 8)
             NSEvent.otherEvent(with: .systemDefined, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0, context: nil, subtype: 8, data1: data, data2: -1)?.cgEvent?.post(tap: .cghidEventTap)
-        }
-    }
-
-    // MPNowPlayingInfoCenter describes this app, not the system's active player.
-    // Query MediaRemote through the system script host, which can read the
-    // active session on recent macOS versions. No app-specific Automation needed.
-    private func querySystemPlaybackState(completion: @escaping (Bool?) -> Void) {
-        let script = """
-        function run() {
-            const framework = $.NSBundle.bundleWithPath('/System/Library/PrivateFrameworks/MediaRemote.framework');
-            if (!framework.load) return 'unknown';
-            const request = $.NSClassFromString('MRNowPlayingRequest');
-            const client = request.localNowPlayingPlayerPath.client;
-            if (!client || !client.bundleIdentifier.js) return 'unknown';
-            return request.localIsPlaying ? 'playing' : 'paused';
-        }
-        """
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-l", "JavaScript", "-e", script]
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        var finished = false
-        let finish: (Bool?) -> Void = { state in
-            guard !finished else { return }
-            finished = true
-            completion(state)
-        }
-        process.terminationHandler = { process in
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            let value = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let state: Bool? = process.terminationStatus == 0
-                ? (value == "playing" ? true : value == "paused" ? false : nil) : nil
-            DispatchQueue.main.async { finish(state) }
-        }
-        do { try process.run() }
-        catch { finish(nil); return }
-        // Keep gestures responsive if the private API stops responding.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            guard !finished else { return }
-            if process.isRunning { process.terminate() }
-            finish(nil)
         }
     }
 
@@ -804,6 +828,7 @@ final class EdgeGestureController {
 
 struct Dashboard: View {
     @AppStorage("showInMenuBar") private var showInMenuBar = true
+    @AppStorage("debugTrackpadFrames") private var debugTrackpadFrames = false
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("volumeEdge") private var volumeEdge = "left"
     @AppStorage("brightnessEdge") private var brightnessEdge = "right"
@@ -822,7 +847,6 @@ struct Dashboard: View {
     @AppStorage("sensitivity") private var sensitivity = 1.5
     @AppStorage("edgeFraction") private var edgeFraction = 0.05
     @AppStorage("edrBrightnessEnabled") private var edrBrightnessEnabled = false
-    @AppStorage("showPausePermissionHelp") private var showPausePermissionHelp = false
 
     var body: some View {
         ScrollView(.vertical) {
@@ -842,8 +866,8 @@ struct Dashboard: View {
                 .padding(12)
                 .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14))
             }
-            ToggleRow(symbol: "sun.max.trianglebadge.exclamationmark", title: "EDR Headroom", subtitle: "Enable extra brightness for SDR content", subtitleColor: .yellow) {
-                Toggle("EDR Headroom", isOn: $edrBrightnessEnabled)
+            ToggleRow(symbol: "sun.max.trianglebadge.exclamationmark", title: "Extended Dynamic Range (EDR) brightness", subtitle: "Enable extra brightness for SDR content", subtitleColor: .yellow) {
+                Toggle("Extended Dynamic Range (EDR) brightness", isOn: $edrBrightnessEnabled)
                     .labelsHidden()
                     .disabled(!DisplayBrightness.supportsEDR)
                     .onChange(of: edrBrightnessEnabled) { enabled in
@@ -859,11 +883,6 @@ struct Dashboard: View {
                 .disabled(!quickMute)
             ToggleRow(symbol: "playpause.fill", title: "Tap to Play or Pause", subtitle: "Tap the selected corner") {
                 Toggle("Tap to Play or Pause", isOn: $tapPause).labelsHidden()
-                    .onChange(of: tapPause) { enabled in
-                        guard enabled, !AXIsProcessTrusted() else { return }
-                        tapPause = false
-                        showPausePermissionHelp = true
-                    }
             }
             Picker("Play/Pause corner", selection: $pauseCorner) { cornerOptions }
                 .labelsHidden()
@@ -876,9 +895,10 @@ struct Dashboard: View {
                 .labelsHidden()
                 .disabled(!longPressLock)
             VStack(alignment: .leading, spacing: 6) {
-                SliderRow(title: "Lock Hold Duration", value: $lockHoldDuration, range: 0.5...3,
-                          display: String(format: "%.1f s", lockHoldDuration))
-                Text("Keep holding through the countdown to lock. Lift or move away to cancel. Short taps keep their usual action.")
+                SliderRow(title: "Lock Countdown Duration", value: $lockHoldDuration,
+                          range: CornerHoldGesture.durationRange,
+                          display: String(format: "%.1f s", lockHoldDuration), step: 0.1)
+                Text("Time from touching the corner until locking. The HUD appears after 0.3 seconds. Lift or move away to cancel.")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -948,9 +968,19 @@ struct Dashboard: View {
                     }
             }
             Divider()
+            ToggleRow(symbol: "waveform.path", title: "Trackpad Debug", subtitle: "Show frame counters at the top left of the screen") {
+                Toggle("Trackpad Debug", isOn: $debugTrackpadFrames).labelsHidden()
+                    .onChange(of: debugTrackpadFrames) { TrackpadDebugOverlay.shared.setEnabled($0) }
+            }
+            Button("Rejection History (last 25)") {
+                TrackpadDebugOverlay.shared.showRejectionHistory()
+            }
+            Divider()
             HStack {
                 Spacer()
-                Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }
+                Button { NSApp.terminate(nil) } label: {
+                    Label("Quit EdgeControl", systemImage: "power")
+                }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
                     .help("Quit EdgeControl")
@@ -958,30 +988,9 @@ struct Dashboard: View {
         }.padding(16).frame(width: 340)
         }
         .frame(width: 340, height: 700)
-        .onAppear(perform: validatePlaybackPermission)
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            validatePlaybackPermission()
-        }
-        .sheet(isPresented: $showPausePermissionHelp) {
-            PausePermissionHelp(
-                checkAccess: {
-                    if AXIsProcessTrusted() { showPausePermissionHelp = false }
-                },
-                dismiss: { showPausePermissionHelp = false }
-            )
-        }
     }
 
     private var brightnessPercent: Int? { DisplayBrightness.currentPercent }
-    private func validatePlaybackPermission() {
-        if AXIsProcessTrusted() {
-            showPausePermissionHelp = false
-            return
-        }
-        guard tapPause else { return }
-        tapPause = false
-        showPausePermissionHelp = true
-    }
 
     private var cornerOptions: some View {
         Group {
@@ -998,51 +1007,8 @@ struct Dashboard: View {
             return "EDR active · \(brightnessPercent)% brightness (up to \(DisplayBrightness.maximumPercent)%)"
         }
         return edrBrightnessEnabled
-            ? "SDR brightness with HDR headroom up to \(DisplayBrightness.maximumPercent)%"
-            : "Enable EDR Headroom to go beyond 100% brightness"
-    }
-}
-
-private struct PausePermissionHelp: View {
-    let checkAccess: () -> Void
-    let dismiss: () -> Void
-    private var runningAppName: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
-            ?? Bundle.main.bundleURL.lastPathComponent
-    }
-    private var installFolderName: String { Bundle.main.bundleURL.deletingLastPathComponent().lastPathComponent }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Allow EdgeControl in Accessibility").font(.title3.bold())
-            Text("EdgeControl isn’t signed, so macOS may not add it to the list automatically. In System Settings, open Privacy & Security → Accessibility, click +, and select \(runningAppName) from \(installFolderName).")
-                .font(.callout).foregroundStyle(.secondary)
-            Text("After you turn on \(runningAppName) in the list, choose Check Again.")
-                .font(.callout).foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 8) {
-                Text("System Settings").font(.headline)
-                Label("Privacy & Security", systemImage: "hand.raised.fill").foregroundStyle(.secondary)
-                Label("Accessibility", systemImage: "accessibility")
-                    .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
-                HStack { Image(systemName: "plus.circle.fill").foregroundStyle(.secondary); Text("Add \(runningAppName)"); Spacer(); Image(systemName: "togglepower").foregroundStyle(.green) }
-                    .padding(8).background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-                Text("\(installFolderName)  ›  \(runningAppName)")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            .padding(12).background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
-            HStack {
-                Button("Open Accessibility Settings") {
-                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-                        NSWorkspace.shared.open(url)
-                    }
-                }
-                Button("Check Again", action: checkAccess)
-                Spacer()
-                Button("Got it", action: dismiss).keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20).frame(width: 430)
+            ? "Extended Dynamic Range (EDR) brightness up to \(DisplayBrightness.maximumPercent)%"
+            : "Enable Extended Dynamic Range (EDR) brightness to go beyond 100% brightness"
     }
 }
 
@@ -1112,5 +1078,20 @@ struct ToggleRow<Control: View>: View {
 
 struct SliderRow: View {
     let title: String; @Binding var value: Double; let range: ClosedRange<Double>; let display: String
-    var body: some View { VStack(spacing: 3) { HStack { Image(systemName: title == "Sensitivity" ? "scope" : "arrow.left.and.right").foregroundStyle(.secondary); Text(title).font(.caption.weight(.medium)); Spacer(); Text(display).font(.caption).foregroundStyle(.secondary) }; Slider(value: $value, in: range).tint(.purple) } }
+    var step: Double? = nil
+    var body: some View {
+        VStack(spacing: 3) {
+            HStack {
+                Image(systemName: title == "Sensitivity" ? "scope" : "arrow.left.and.right").foregroundStyle(.secondary)
+                Text(title).font(.caption.weight(.medium))
+                Spacer()
+                Text(display).font(.caption).foregroundStyle(.secondary)
+            }
+            if let step {
+                Slider(value: $value, in: range, step: step).tint(.purple)
+            } else {
+                Slider(value: $value, in: range).tint(.purple)
+            }
+        }
+    }
 }
